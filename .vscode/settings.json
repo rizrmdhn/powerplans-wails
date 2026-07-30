@@ -1,3 +1,11 @@
 {
-  "js/ts.experimental.useTsgo": false
+  "js/ts.experimental.useTsgo": false,
+  "github.copilot.chat.commitMessageGeneration.instructions": [
+    {
+      "file": "./.github/prompts/commit-message.prompt.md"
+    },
+    {
+      "text": "Return exactly one Conventional Commit message as plain text. Do not include Markdown, explanations, alternatives, bullets, quotes, or a body unless the change is breaking."
+    }
+  ]
 }

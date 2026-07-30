@@ -74,6 +74,14 @@ wails build
 Output lands in `build/bin/PowerPlanSwitcher.exe` — a single portable
 executable, no install step for whoever runs it.
 
+## GitHub Actions
+
+The included workflow builds the Windows executable for every pull request
+targeting `main` and uploads it as a workflow artifact. Once a PR is merged
+and its commit reaches `main`, the same build is published automatically as a
+GitHub release with a `build-<run number>` tag. This keeps unmerged PR code
+from being released.
+
 ## Notes
 
 - **Admin rights**: `powercfg /setactive`, `/delete`, `/changename` work
