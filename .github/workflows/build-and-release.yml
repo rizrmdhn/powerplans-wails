@@ -1,0 +1,73 @@
+name: Build and release Windows app
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build PowerPlanSwitcher
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
+
+      - name: Build Windows executable
+        run: wails build -platform windows/amd64
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: PowerPlanSwitcher-windows-amd64
+          path: build/bin/PowerPlanSwitcher.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    # PR builds are validation-only. A release is made only after code reaches main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download executable
+        uses: actions/download-artifact@v4
+        with:
+          name: PowerPlanSwitcher-windows-amd64
+          path: release
+
+      - name: Create release and attach executable
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: build-${{ github.run_number }}
+        run: |
+          gh release create $env:RELEASE_TAG "release/PowerPlanSwitcher.exe" --title "PowerPlanSwitcher build #${{ github.run_number }}" --generate-notes
