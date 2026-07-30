@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // App struct holds the runtime context Wails injects on startup.
@@ -59,6 +60,9 @@ var currentIndexRe = regexp.MustCompile(`(?im)Current (?:AC|DC) Power Setting In
 
 func runPowercfg(args ...string) (string, error) {
 	cmd := exec.Command("powercfg", args...)
+	// powercfg is a console application. Hide its console window when launched
+	// from the Wails GUI so operations do not flash a Command Prompt window.
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
