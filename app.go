@@ -7,7 +7,12 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 )
+
+// powercfgTimeout bounds how long a single powercfg invocation may run before
+// it is cancelled, so a hung process can't freeze the app indefinitely.
+const powercfgTimeout = 15 * time.Second
 
 // App struct holds the runtime context Wails injects on startup.
 type App struct {
@@ -56,15 +61,31 @@ var knownTemplates = []PowerPlan{
 
 var listLineRe = regexp.MustCompile(`(?i)Power Scheme GUID:\s*([0-9a-fA-F-]{36})\s*\(([^)]*)\)\s*(\*)?`)
 var guidRe = regexp.MustCompile(`(?i)[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}`)
+var guidExactRe = regexp.MustCompile(`(?i)^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$`)
 var currentIndexRe = regexp.MustCompile(`(?im)Current (?:AC|DC) Power Setting Index:\s*0x([0-9a-f]+)`)
 
-func runPowercfg(args ...string) (string, error) {
-	cmd := exec.Command("powercfg", args...)
+// validateGUID rejects anything that isn't a well-formed GUID before it is
+// passed to powercfg, since powercfg is invoked with the value verbatim.
+func validateGUID(guid string) error {
+	if !guidExactRe.MatchString(strings.TrimSpace(guid)) {
+		return fmt.Errorf("invalid power plan identifier")
+	}
+	return nil
+}
+
+func (a *App) runPowercfg(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, powercfgTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "powercfg", args...)
 	// powercfg is a console application. Hide its console window when launched
 	// from the Wails GUI so operations do not flash a Command Prompt window.
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("powercfg timed out after %s", powercfgTimeout)
+		}
 		return "", fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
@@ -73,7 +94,7 @@ func runPowercfg(args ...string) (string, error) {
 // GetPlans returns every plan currently registered on the system, flagging
 // the active one, plus any well-known template that isn't installed yet.
 func (a *App) GetPlans() ([]PowerPlan, error) {
-	out, err := runPowercfg("/list")
+	out, err := a.runPowercfg("/list")
 	if err != nil {
 		return nil, err
 	}
@@ -106,14 +127,20 @@ func (a *App) GetPlans() ([]PowerPlan, error) {
 
 // SetActive switches the active power plan.
 func (a *App) SetActive(guid string) error {
-	_, err := runPowercfg("/setactive", guid)
+	if err := validateGUID(guid); err != nil {
+		return err
+	}
+	_, err := a.runPowercfg("/setactive", guid)
 	return err
 }
 
 // DeletePlan removes a plan. Windows itself refuses to delete the active
 // plan, so we surface that as a clear error rather than letting it fail silently.
 func (a *App) DeletePlan(guid string) error {
-	_, err := runPowercfg("/delete", guid)
+	if err := validateGUID(guid); err != nil {
+		return err
+	}
+	_, err := a.runPowercfg("/delete", guid)
 	if err != nil {
 		return fmt.Errorf("couldn't delete plan (it may be the active plan — switch to another plan first): %w", err)
 	}
@@ -122,17 +149,23 @@ func (a *App) DeletePlan(guid string) error {
 
 // RestorePlan brings a hidden Windows-default template back via /duplicatescheme.
 func (a *App) RestorePlan(guid string) error {
-	_, err := runPowercfg("/duplicatescheme", guid)
+	if err := validateGUID(guid); err != nil {
+		return err
+	}
+	_, err := a.runPowercfg("/duplicatescheme", guid)
 	return err
 }
 
 // RenamePlan renames a plan in place (name only, keeps existing settings).
 func (a *App) RenamePlan(guid string, newName string) error {
+	if err := validateGUID(guid); err != nil {
+		return err
+	}
 	newName = strings.TrimSpace(newName)
 	if newName == "" {
 		return fmt.Errorf("plan name cannot be empty")
 	}
-	_, err := runPowercfg("/changename", guid, newName)
+	_, err := a.runPowercfg("/changename", guid, newName)
 	return err
 }
 
@@ -143,12 +176,18 @@ func (a *App) CreatePlan(name, sourceGUID string) error {
 	if name == "" {
 		return fmt.Errorf("plan name cannot be empty")
 	}
+	sourceGUID = strings.TrimSpace(sourceGUID)
+	if sourceGUID != "" {
+		if err := validateGUID(sourceGUID); err != nil {
+			return err
+		}
+	}
 
 	args := []string{"/duplicatescheme"}
-	if strings.TrimSpace(sourceGUID) != "" {
+	if sourceGUID != "" {
 		args = append(args, sourceGUID)
 	}
-	out, err := runPowercfg(args...)
+	out, err := a.runPowercfg(args...)
 	if err != nil {
 		return err
 	}
@@ -157,7 +196,7 @@ func (a *App) CreatePlan(name, sourceGUID string) error {
 	if guid == "" {
 		return fmt.Errorf("Windows created the plan but did not return its identifier")
 	}
-	_, err = runPowercfg("/changename", guid, name)
+	_, err = a.runPowercfg("/changename", guid, name)
 	return err
 }
 
@@ -170,8 +209,8 @@ var timeoutSettings = []struct {
 	{"SUB_SLEEP", "STANDBYIDLE"},
 }
 
-func readTimeout(guid, subgroup, setting string) (int, int, error) {
-	out, err := runPowercfg("/query", guid, subgroup, setting)
+func (a *App) readTimeout(guid, subgroup, setting string) (int, int, error) {
+	out, err := a.runPowercfg("/query", guid, subgroup, setting)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -191,10 +230,13 @@ func readTimeout(guid, subgroup, setting string) (int, int, error) {
 
 // GetPlanSettings reads the most useful timeouts from the selected scheme.
 func (a *App) GetPlanSettings(guid string) (PlanSettings, error) {
+	if err := validateGUID(guid); err != nil {
+		return PlanSettings{}, err
+	}
 	var settings PlanSettings
 	values := []*int{&settings.DisplayAC, &settings.DisplayDC, &settings.DiskAC, &settings.DiskDC, &settings.SleepAC, &settings.SleepDC}
 	for i, item := range timeoutSettings {
-		ac, dc, err := readTimeout(guid, item.subgroup, item.setting)
+		ac, dc, err := a.readTimeout(guid, item.subgroup, item.setting)
 		if err != nil {
 			return PlanSettings{}, err
 		}
@@ -207,6 +249,9 @@ func (a *App) GetPlanSettings(guid string) (PlanSettings, error) {
 // UpdatePlanSettings writes timeout values to the selected scheme without
 // switching the user's currently active plan.
 func (a *App) UpdatePlanSettings(guid string, settings PlanSettings) error {
+	if err := validateGUID(guid); err != nil {
+		return err
+	}
 	values := [][2]int{
 		{settings.DisplayAC, settings.DisplayDC},
 		{settings.DiskAC, settings.DiskDC},
@@ -221,7 +266,7 @@ func (a *App) UpdatePlanSettings(guid string, settings PlanSettings) error {
 			if mode == 1 {
 				command = "/setdcvalueindex"
 			}
-			if _, err := runPowercfg(command, guid, item.subgroup, item.setting, fmt.Sprint(value)); err != nil {
+			if _, err := a.runPowercfg(command, guid, item.subgroup, item.setting, fmt.Sprint(value)); err != nil {
 				return err
 			}
 		}

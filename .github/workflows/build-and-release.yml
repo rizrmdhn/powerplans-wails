@@ -35,6 +35,13 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Vet Go code
+        run: go vet ./...
+
+      - name: Type-check frontend
+        working-directory: frontend
+        run: npx tsc --noEmit
+
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
