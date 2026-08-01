@@ -1,3 +1,13 @@
 build/bin
 node_modules
 frontend/dist
+
+# stray binary from `go build ./...` at repo root
+/powerplan-wails
+/powerplan-wails.exe
+*.test
+*.out
+
+# OS cruft
+Thumbs.db
+.DS_Store
