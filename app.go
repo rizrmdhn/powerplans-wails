@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // powercfgTimeout bounds how long a single powercfg invocation may run before
@@ -63,6 +65,14 @@ var listLineRe = regexp.MustCompile(`(?i)Power Scheme GUID:\s*([0-9a-fA-F-]{36})
 var guidRe = regexp.MustCompile(`(?i)[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}`)
 var guidExactRe = regexp.MustCompile(`(?i)^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$`)
 var currentIndexRe = regexp.MustCompile(`(?im)Current (?:AC|DC) Power Setting Index:\s*0x([0-9a-f]+)`)
+
+// notifyPlansChanged keeps the tray menu and any open window in sync after a
+// plan-mutating method succeeds, regardless of whether the change came from
+// the tray or the window itself.
+func (a *App) notifyPlansChanged() {
+	refreshTray()
+	runtime.EventsEmit(a.ctx, "plans:changed")
+}
 
 // validateGUID rejects anything that isn't a well-formed GUID before it is
 // passed to powercfg, since powercfg is invoked with the value verbatim.
@@ -131,7 +141,11 @@ func (a *App) SetActive(guid string) error {
 		return err
 	}
 	_, err := a.runPowercfg("/setactive", guid)
-	return err
+	if err != nil {
+		return err
+	}
+	a.notifyPlansChanged()
+	return nil
 }
 
 // DeletePlan removes a plan. Windows itself refuses to delete the active
@@ -144,6 +158,7 @@ func (a *App) DeletePlan(guid string) error {
 	if err != nil {
 		return fmt.Errorf("couldn't delete plan (it may be the active plan — switch to another plan first): %w", err)
 	}
+	a.notifyPlansChanged()
 	return nil
 }
 
@@ -153,7 +168,11 @@ func (a *App) RestorePlan(guid string) error {
 		return err
 	}
 	_, err := a.runPowercfg("/duplicatescheme", guid)
-	return err
+	if err != nil {
+		return err
+	}
+	a.notifyPlansChanged()
+	return nil
 }
 
 // RenamePlan renames a plan in place (name only, keeps existing settings).
@@ -166,7 +185,11 @@ func (a *App) RenamePlan(guid string, newName string) error {
 		return fmt.Errorf("plan name cannot be empty")
 	}
 	_, err := a.runPowercfg("/changename", guid, newName)
-	return err
+	if err != nil {
+		return err
+	}
+	a.notifyPlansChanged()
+	return nil
 }
 
 // CreatePlan duplicates an existing scheme and gives the copy a user-supplied name.
@@ -196,8 +219,11 @@ func (a *App) CreatePlan(name, sourceGUID string) error {
 	if guid == "" {
 		return fmt.Errorf("Windows created the plan but did not return its identifier")
 	}
-	_, err = a.runPowercfg("/changename", guid, name)
-	return err
+	if _, err := a.runPowercfg("/changename", guid, name); err != nil {
+		return err
+	}
+	a.notifyPlansChanged()
+	return nil
 }
 
 var timeoutSettings = []struct {

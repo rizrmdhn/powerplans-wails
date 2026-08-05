@@ -13,6 +13,7 @@ import {
   SetActive,
   UpdatePlanSettings,
 } from "../wailsjs/go/main/App";
+import { EventsOn } from "../wailsjs/runtime/runtime";
 
 interface PowerPlan {
   guid: string;
@@ -79,6 +80,14 @@ export default function App() {
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
+
+  // Switching the active plan from the tray icon happens outside this
+  // window, so listen for the backend's broadcast and pick up the change.
+  useEffect(() => {
+    return EventsOn("plans:changed", () => {
+      refresh();
+    });
   }, [refresh]);
 
   const withBusy = async (guid: string, fn: () => Promise<void>) => {
